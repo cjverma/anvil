@@ -125,15 +125,26 @@ public enum Shell {
     public static func output(_ executable: String, _ arguments: [String]) -> String? {
         let process = Process()
         let pipe = Pipe()
+        let errorPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = errorPipe
         do {
             try process.run()
+            // Drain the pipes before waiting.
+            //
+            // waitUntilExit() first deadlocks the moment a child fills the 64 KB
+            // pipe buffer: it blocks writing, we block waiting, and neither side
+            // moves again. `ps -axww -o pid=,command=` clears 64 KB comfortably on
+            // a busy Mac, and the enforcement loop runs it every second — so the
+            // daemon would hang and silently stop enforcing, with the session still
+            // marked active and no way to tell from the outside.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            _ = errorPipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
-            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+            return String(data: data, encoding: .utf8)
         } catch {
             return nil
         }
