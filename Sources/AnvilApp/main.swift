@@ -1,4 +1,5 @@
 import AnvilCore
+import AppKit
 import SwiftUI
 
 @main
@@ -113,10 +114,23 @@ struct ContentView: View {
             editor
             duration
             controls
-            Text(model.status)
+            HStack(alignment: .firstTextBaseline) {
+                Text(model.status)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer()
+                // Without this there is no way out of the app at all: the window
+                // style has no context menu, and LSUIElement means no Dock icon
+                // and no Cmd-Q. Quitting does not touch an active block — the
+                // daemon owns the deadline and keeps enforcing it.
+                Button("Quit") {
+                    NSApplication.shared.terminate(nil)
+                }
+                .buttonStyle(.link)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .help("Quits the menu bar app. An active block keeps running.")
+            }
         }
         .padding(16)
         .onAppear(perform: syncFields)
