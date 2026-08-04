@@ -12,7 +12,10 @@ if [[ ! -d "$APP" ]]; then
 fi
 
 install -d -m 0755 "$DEST"
-install -d -m 0700 "$SUPPORT"
+# 0755, not 0700: public-state.json inside is mode 0644 so the menu bar app can
+# read the countdown unprivileged, and a 0700 parent makes the directory
+# untraversable for anyone but root. Nothing in here is user-writable either way.
+install -d -m 0755 "$SUPPORT"
 install -m 0755 "$APP/Contents/MacOS/anvild" "$DEST/anvild"
 install -m 0755 "$APP/Contents/MacOS/anvil-watchdog" "$DEST/anvil-watchdog"
 

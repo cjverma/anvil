@@ -12,13 +12,19 @@ public struct HostsFile {
 
     public func blockedContents(existing: String, domains: [String]) -> String {
         let base = removeManagedSection(from: existing)
-        let normalized = Array(Set(domains.flatMap { domain -> [String] in
+        let expanded = domains.flatMap { domain -> [String] in
             let value = DomainNormalizer.normalize(domain)
             guard !value.isEmpty else { return [] }
             return value.hasPrefix("www.") ? [value] : [value, "www.\(value)"]
-        } + HostsFile.dohEndpointDomains)).sorted()
+        }
 
-        guard !normalized.isEmpty else { return base }
+        // Bail before folding in the DoH endpoints, not after. Adding them first
+        // makes the list non-empty even when the preset blocks no sites at all, so
+        // an apps-only session would still write a hosts block and break
+        // DNS-over-HTTPS for no reason.
+        guard !expanded.isEmpty else { return base }
+
+        let normalized = Array(Set(expanded + HostsFile.dohEndpointDomains)).sorted()
 
         let lines = [Self.startMarker]
             + normalized.flatMap { ["0.0.0.0 \($0)", ":: \($0)"] }
@@ -79,11 +85,24 @@ public struct HostsFile {
         _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
     }
 
+    /// A browser resolving over DNS-over-HTTPS never reads /etc/hosts, so the
+    /// resolver endpoints are blocked too. Together with the managed policy files
+    /// this collapses a browser back onto the system resolver.
     public static let dohEndpointDomains = [
+        "chrome.cloudflare-dns.com",
         "cloudflare-dns.com",
+        "dns.adguard.com",
         "dns.google",
+        "dns.nextdns.io",
         "dns.quad9.net",
+        "dns.sb",
+        "dns64.dns.google",
+        "doh.cleanbrowsing.org",
+        "doh.dns.sb",
+        "doh.opendns.com",
+        "family.cloudflare-dns.com",
         "mozilla.cloudflare-dns.com",
+        "one.one.one.one",
         "security.cloudflare-dns.com"
     ]
 }

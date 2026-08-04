@@ -94,14 +94,31 @@ DispatchQueue.global(qos: .userInitiated).async {
 }
 
 var lastPFRefresh = Date.distantPast
+// Cleanup runs once on the active-to-idle transition, not on every idle tick.
+//
+// Calling it every second while nothing is blocked meant restoring browser
+// policies, flushing pf and rewriting public state once a second forever: a
+// couple of process spawns per second at rest, and repeated churn over files
+// that are already in their final state.
+//
+// Starts true so a daemon coming up with no active session performs exactly one
+// cleanup pass. That is the crash-recovery path: if the last session died between
+// its deadline and its revert, /etc/hosts and the pf anchor are still in place.
+var wasEnforcing = true
+
 while true {
     autoreleasepool {
         guard let session = store.current(), session.endsAt > Date() else {
-            cleanup()
+            if wasEnforcing {
+                wasEnforcing = false
+                lastPFRefresh = .distantPast
+                cleanup()
+            }
             sleep(1)
             return
         }
 
+        wasEnforcing = true
         enforce(session: session, includeEscapeTools: !options.testMode, configurePF: false)
         try? store.writePublicState(for: session)
 

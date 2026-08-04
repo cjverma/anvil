@@ -79,6 +79,11 @@ public struct PFAnchor {
             }
 
             _ = Shell.run("/sbin/pfctl", ["-f", pfConfPath.path])
+            // Remember whether pf was already running, so ending a session never
+            // switches off a firewall the user was using before Anvil existed.
+            if !isEnabled() {
+                FileManager.default.createFile(atPath: AnvilPaths().pfWasOffMarker.path, contents: Data())
+            }
             _ = Shell.run("/sbin/pfctl", ["-e"])
             replaceTable(domains: domains)
         } catch {
@@ -94,22 +99,62 @@ public struct PFAnchor {
         try? FileManager.default.removeItem(at: temporary)
     }
 
+    public func isEnabled() -> Bool {
+        (Shell.output("/sbin/pfctl", ["-s", "info"]) ?? "").contains("Status: Enabled")
+    }
+
+    /// Full teardown.
+    ///
+    /// Flushing the table alone leaves the anchor wired into /etc/pf.conf and pf
+    /// still running, so every finished session left the machine with a firewall
+    /// it did not have beforehand and an anvil anchor that outlived the block.
     public func disable(dryRun: Bool = false) {
         if dryRun {
-            print("[dry-run] would unload pf anchor")
+            print("[dry-run] would unload the pf anchor and restore /etc/pf.conf")
             return
         }
         _ = Shell.run("/sbin/pfctl", ["-a", Self.anchorName, "-t", Self.tableName, "-T", "flush"])
+        _ = Shell.run("/sbin/pfctl", ["-a", Self.anchorName, "-F", "rules"])
+
+        if let backup = try? String(contentsOf: backupPath, encoding: .utf8) {
+            try? backup.write(to: pfConfPath, atomically: true, encoding: .utf8)
+        } else {
+            let current = (try? String(contentsOf: pfConfPath, encoding: .utf8)) ?? ""
+            try? removeManagedSection(from: current).write(to: pfConfPath, atomically: true, encoding: .utf8)
+        }
+        _ = Shell.run("/sbin/pfctl", ["-f", pfConfPath.path])
+
+        let marker = AnvilPaths().pfWasOffMarker
+        if FileManager.default.fileExists(atPath: marker.path) {
+            _ = Shell.run("/sbin/pfctl", ["-d"])
+            try? FileManager.default.removeItem(at: marker)
+        }
     }
 
+    /// Resolves apex and www, over both A and AAAA.
+    ///
+    /// `dig` queries DNS directly and never consults /etc/hosts, so this still
+    /// returns real addresses after the hosts block is in place. Asking only for A
+    /// records leaves every IPv6-reachable host completely unblocked at the packet
+    /// layer.
     public func resolve(domains: [String]) -> [String] {
         let normalized = Array(Set(domains.map { DomainNormalizer.normalize($0) }.filter { !$0.isEmpty })).sorted()
-        return normalized.flatMap { domain -> [String] in
-            let output = Shell.output("/usr/bin/dig", ["+short", domain]) ?? Shell.output("/usr/bin/host", [domain]) ?? ""
-            return output.split(separator: "\n").compactMap { line in
-                let value = line.split(separator: " ").last.map(String.init) ?? String(line)
-                return value.range(of: #"^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+$"#, options: .regularExpression) == nil ? nil : value
+        var addresses = Set<String>()
+        for domain in normalized {
+            for host in [domain, "www.\(domain)"] {
+                for recordType in ["A", "AAAA"] {
+                    let output = Shell.output("/usr/bin/dig", ["+short", "+time=2", "+tries=1", recordType, host]) ?? ""
+                    for line in output.split(separator: "\n") {
+                        let value = line.split(separator: " ").last.map(String.init) ?? String(line)
+                        guard value.range(of: #"^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+$"#, options: .regularExpression) != nil else { continue }
+                        // Never load a placeholder into the table: blackholing these
+                        // would take out far more than the blocklist.
+                        guard !["0.0.0.0", "127.0.0.1", "::", "::1"].contains(value) else { continue }
+                        addresses.insert(value)
+                    }
+                }
             }
         }
+        return addresses.sorted()
     }
 }

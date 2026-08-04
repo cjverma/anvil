@@ -19,6 +19,10 @@ public struct AnvilPaths {
     public var publicStateFile: URL { supportDirectory.appendingPathComponent("public-state.json") }
     public var lockFile: URL { supportDirectory.appendingPathComponent("anvil.lock") }
     public var pfBackupFile: URL { supportDirectory.appendingPathComponent("pf.conf.orig") }
+    public var policyBackupDirectory: URL { supportDirectory.appendingPathComponent("policy-backups", isDirectory: true) }
+    /// Written only when Anvil is the one that turned pf on, so a session end does
+    /// not disable a firewall the user was already running.
+    public var pfWasOffMarker: URL { supportDirectory.appendingPathComponent("pf-was-off") }
     public var daemonPlist: URL { launchDaemonDirectory.appendingPathComponent("com.cjverma.anvild.plist") }
     public var watchdogPlist: URL { launchDaemonDirectory.appendingPathComponent("com.cjverma.anvil-watchdog.plist") }
 

@@ -42,7 +42,15 @@ public struct ProcessScanner {
             "com.apple.systempreferences",
             "com.apple.SystemSettings",
             "com.apple.Console",
-            "com.apple.ScriptEditor2"
+            "com.apple.ScriptEditor2",
+            // Third-party terminals are the same escape hatch as Terminal.app.
+            // Leaving any one of them out hands back a root shell.
+            "dev.warp.Warp-Stable",
+            "co.zeit.hyper",
+            "net.kovidgoyal.kitty",
+            "io.alacritty",
+            "com.github.wez.wezterm",
+            "com.mitchellh.ghostty"
         ],
         appPaths: [
             "/System/Applications/Utilities/Terminal.app",
@@ -59,24 +67,55 @@ public struct ProcessScanner {
 
     public init() {}
 
+    /// Two `ps` passes joined on pid.
+    ///
+    /// `comm` and `command` can each contain spaces and `ps` gives no delimiter to
+    /// say where one ends and the next begins, so only the trailing column can be
+    /// parsed safely. Asking for both in one call and splitting on the first space
+    /// turns "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" into
+    /// "/Applications/Google", which has no .app component — so the bundle lookup
+    /// returns nil and bundle-ID matching silently stops working for every app with
+    /// a space in its name.
+    ///
+    /// `uid` rides along in the same call. Querying it per pid costs one `ps` fork
+    /// per process per tick: several hundred a second, forever, as root.
     public func runningProcesses() -> [RunningProcess] {
-        guard let output = Shell.output("/bin/ps", ["-axww", "-o", "pid=,comm=,command="]) else { return [] }
-        return output.split(separator: "\n").compactMap { line in
-            parsePSLine(String(line))
+        guard let identity = Shell.output("/bin/ps", ["-axww", "-o", "pid=,uid=,comm="]) else { return [] }
+        let commands = Shell.output("/bin/ps", ["-axww", "-o", "pid=,command="]) ?? ""
+
+        var commandsByPID: [Int32: String] = [:]
+        for line in commands.split(separator: "\n") {
+            guard let (pid, rest) = Self.splitLeadingInteger(String(line)) else { continue }
+            commandsByPID[pid] = rest
+        }
+
+        return identity.split(separator: "\n").compactMap { line in
+            parseProcessLine(String(line), commandsByPID: commandsByPID)
         }
     }
 
-    public func parsePSLine(_ line: String) -> RunningProcess? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        guard let firstSpace = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }) else { return nil }
-        let pidPart = String(trimmed[..<firstSpace])
-        guard let pid = Int32(pidPart) else { return nil }
-        let remainder = trimmed[firstSpace...].trimmingCharacters(in: .whitespaces)
-        let pieces = remainder.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-        guard let comm = pieces.first else { return nil }
-        let command = pieces.count > 1 ? String(pieces[1]) : String(comm)
-        let path = String(comm)
-        return RunningProcess(pid: pid, executablePath: path, commandLine: command, uid: uidForPID(pid), bundleID: bundleID(forExecutablePath: path))
+    public func parseProcessLine(_ line: String, commandsByPID: [Int32: String] = [:]) -> RunningProcess? {
+        guard let (pid, afterPID) = Self.splitLeadingInteger(line),
+              let (uid, executablePath) = Self.splitLeadingInteger(afterPID) else { return nil }
+        let path = executablePath.trimmingCharacters(in: .whitespaces)
+        guard !path.isEmpty else { return nil }
+        return RunningProcess(
+            pid: pid,
+            executablePath: path,
+            commandLine: commandsByPID[pid] ?? path,
+            uid: UInt32(max(0, uid)),
+            bundleID: bundleID(forExecutablePath: path)
+        )
+    }
+
+    /// Peels one integer field off the front of a line and returns the remainder
+    /// untouched, so a trailing path keeps its spaces.
+    static func splitLeadingInteger(_ line: String) -> (Int32, String)? {
+        let trimmed = line.drop { $0 == " " || $0 == "\t" }
+        guard let boundary = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }) else { return nil }
+        guard let value = Int32(trimmed[trimmed.startIndex..<boundary]) else { return nil }
+        let rest = trimmed[trimmed.index(after: boundary)...].drop { $0 == " " || $0 == "\t" }
+        return (value, String(rest))
     }
 
     public func shouldKill(_ process: RunningProcess, preset: Preset, includeEscapeTools: Bool = true) -> Bool {
@@ -142,9 +181,4 @@ public struct ProcessScanner {
         return nil
     }
 
-    private func uidForPID(_ pid: Int32) -> UInt32 {
-        let output = Shell.output("/bin/ps", ["-o", "uid=", "-p", "\(pid)"])?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return UInt32(output ?? "") ?? getuid()
-    }
 }

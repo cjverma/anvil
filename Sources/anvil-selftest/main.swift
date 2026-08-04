@@ -81,6 +81,27 @@ let dock = RunningProcess(
 SelfTest.expect(scanner.shouldKill(terminal, preset: Preset(name: "None", defaultMinutes: 15)), "Terminal is killable")
 SelfTest.expect(!scanner.shouldKill(dock, preset: Preset(name: "None", defaultMinutes: 15)), "Dock is protected")
 
+// Paths with spaces are what a single "pid comm command" ps parse silently
+// truncates, which breaks the bundle lookup and with it every bundle-ID match for
+// Chrome, Activity Monitor and System Settings.
+let chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+let parsedChrome = scanner.parseProcessLine("  501   502 \(chromePath)")
+SelfTest.expect(parsedChrome?.executablePath == chromePath, "ps parse keeps paths containing spaces")
+SelfTest.expect(parsedChrome?.pid == 501 && parsedChrome?.uid == 502, "ps parse reads pid and uid")
+
+SelfTest.expect(
+    Set(ProcessScanner.escapeTools.appBundleIDs).intersection(ProcessScanner.protectedBundleIDs).isEmpty,
+    "no escape tool is also on the protected list"
+)
+SelfTest.expect(
+    !hosts.blockedContents(existing: "127.0.0.1 localhost\n", domains: []).contains("dns.google"),
+    "an apps-only preset writes no hosts block"
+)
+SelfTest.expect(
+    DomainNormalizer.normalize("www.reddit.com") == DomainNormalizer.normalize("reddit.com"),
+    "www folds into the apex"
+)
+
 let pf = PFAnchor(anchorPath: URL(fileURLWithPath: "/etc/pf.anchors/anvil"))
 let basePF = "scrub-anchor \"com.apple/*\"\n"
 let anchoredPF = pf.pfConfWithAnchor(existing: basePF)

@@ -138,6 +138,12 @@ public enum DomainNormalizer {
         value = value.split(separator: "/").first.map(String.init) ?? value
         value = value.split(separator: ":").first.map(String.init) ?? value
         value = value.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        // Fold www. into the apex so "www.reddit.com" and "reddit.com" are one
+        // entry. Left separate they never dedupe through Set, and the rendered
+        // hosts block carries both plus a nonsense "www.www.reddit.com".
+        if value.hasPrefix("www."), value.count > 4 {
+            value = String(value.dropFirst(4))
+        }
         return value
     }
 }
