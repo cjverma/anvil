@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+.swiftpm-home/
+Anvil.app/
+.DS_Store
+*.xcodeproj
+Package.resolved

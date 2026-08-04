@@ -1,0 +1,219 @@
+import AnvilCore
+import SwiftUI
+
+@main
+struct AnvilMenuBarApp: App {
+    @StateObject private var model = AppModel()
+
+    var body: some Scene {
+        MenuBarExtra("Anvil", systemImage: model.isActive ? "lock.fill" : "lock.open") {
+            ContentView()
+                .environmentObject(model)
+                .frame(width: 360)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+final class AppModel: ObservableObject {
+    @Published var presets: [Preset] = []
+    @Published var selectedPresetID: UUID?
+    @Published var minutes = 30
+    @Published var status = "Ready"
+    @Published var publicState = PublicState(isActive: false, endsAt: nil, presetName: nil)
+
+    private let presetsURL = AnvilPaths.userPresetsFile
+    private var timer: Timer?
+
+    var isActive: Bool { publicState.endsAt.map { $0 > Date() } ?? false }
+    var selectedPreset: Preset? { presets.first { $0.id == selectedPresetID } }
+
+    init() {
+        loadPresets()
+        readPublicState()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.readPublicState()
+        }
+    }
+
+    func loadPresets() {
+        if let loaded = try? JSONFiles.read([Preset].self, from: presetsURL), !loaded.isEmpty {
+            presets = loaded
+        } else {
+            presets = [
+                Preset(
+                    name: "Deep Work",
+                    appBundleIDs: ["com.tinyspeck.slackmacgap", "com.apple.MobileSMS"],
+                    appPaths: ["/Applications/Slack.app", "/System/Applications/Messages.app"],
+                    domains: ["youtube.com", "x.com", "reddit.com"],
+                    defaultMinutes: 60
+                )
+            ]
+            savePresets()
+        }
+        selectedPresetID = presets.first?.id
+        minutes = presets.first?.defaultMinutes ?? 30
+    }
+
+    func savePresets() {
+        try? JSONFiles.write(presets.map { $0.normalized() }, to: presetsURL, permissions: 0o644)
+    }
+
+    func readPublicState() {
+        let url = AnvilPaths().publicStateFile
+        if let state = try? JSONFiles.read(PublicState.self, from: url) {
+            DispatchQueue.main.async {
+                self.publicState = state
+            }
+        }
+    }
+
+    func startSelected() {
+        guard let preset = selectedPreset else { return }
+        let request = StartRequest(preset: preset, minutes: minutes)
+        do {
+            status = try ControlSocketClient().send(request)
+        } catch {
+            status = "Install or start the daemon first."
+        }
+    }
+
+    func addPreset() {
+        let preset = Preset(name: "New Block", domains: [], defaultMinutes: 30)
+        presets.append(preset)
+        selectedPresetID = preset.id
+        savePresets()
+    }
+
+    func deleteSelected() {
+        guard let id = selectedPresetID else { return }
+        presets.removeAll { $0.id == id }
+        selectedPresetID = presets.first?.id
+        savePresets()
+    }
+}
+
+struct ContentView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var appBundleIDs = ""
+    @State private var appPaths = ""
+    @State private var domains = ""
+    @State private var showingConfirm = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            Picker("Preset", selection: $model.selectedPresetID) {
+                ForEach(model.presets) { preset in
+                    Text(preset.name).tag(Optional(preset.id))
+                }
+            }
+            .onChange(of: model.selectedPresetID) { _ in syncFields() }
+
+            editor
+            duration
+            controls
+            Text(model.status)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .padding(16)
+        .onAppear(perform: syncFields)
+        .confirmationDialog("Start Anvil?", isPresented: $showingConfirm, titleVisibility: .visible) {
+            Button("Block until \(endTimeString())", role: .destructive) {
+                model.startSelected()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("There is no early exit. Safe Mode is the recovery path.")
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Anvil")
+                .font(.title2.bold())
+            if let endsAt = model.publicState.endsAt, endsAt > Date() {
+                Text("Active until \(endsAt.formatted(date: .omitted, time: .shortened))")
+                    .font(.subheadline)
+            } else {
+                Text("No active block")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Bundle IDs, comma separated", text: $appBundleIDs, axis: .vertical)
+            TextField("App paths, comma separated", text: $appPaths, axis: .vertical)
+            TextField("Domains, comma separated", text: $domains, axis: .vertical)
+        }
+        .textFieldStyle(.roundedBorder)
+        .onChange(of: appBundleIDs) { _ in commitFields() }
+        .onChange(of: appPaths) { _ in commitFields() }
+        .onChange(of: domains) { _ in commitFields() }
+    }
+
+    private var duration: some View {
+        VStack(alignment: .leading) {
+            Stepper("Duration: \(model.minutes) min", value: $model.minutes, in: 1...1_440, step: 5)
+            Slider(value: Binding(
+                get: { Double(model.minutes) },
+                set: { model.minutes = Int($0) }
+            ), in: 1...1_440, step: 1)
+        }
+    }
+
+    private var controls: some View {
+        HStack {
+            Button {
+                model.addPreset()
+                syncFields()
+            } label: {
+                Label("Add", systemImage: "plus")
+            }
+            Button(role: .destructive) {
+                model.deleteSelected()
+                syncFields()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            Spacer()
+            Button {
+                showingConfirm = true
+            } label: {
+                Label("Start", systemImage: "lock.fill")
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(model.selectedPreset == nil)
+        }
+    }
+
+    private func syncFields() {
+        guard let preset = model.selectedPreset else { return }
+        appBundleIDs = preset.appBundleIDs.joined(separator: ", ")
+        appPaths = preset.appPaths.joined(separator: ", ")
+        domains = preset.domains.joined(separator: ", ")
+        model.minutes = preset.defaultMinutes
+    }
+
+    private func commitFields() {
+        guard let id = model.selectedPresetID, let index = model.presets.firstIndex(where: { $0.id == id }) else { return }
+        model.presets[index].appBundleIDs = split(appBundleIDs)
+        model.presets[index].appPaths = split(appPaths)
+        model.presets[index].domains = split(domains)
+        model.presets[index].defaultMinutes = model.minutes
+        model.savePresets()
+    }
+
+    private func split(_ text: String) -> [String] {
+        text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+
+    private func endTimeString() -> String {
+        Date().addingTimeInterval(TimeInterval(model.minutes * 60)).formatted(date: .abbreviated, time: .shortened)
+    }
+}
