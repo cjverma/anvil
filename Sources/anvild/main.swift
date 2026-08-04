@@ -52,7 +52,14 @@ func cleanup() {
     try? store.clear()
 }
 
-ensureSingleInstance()
+// A dry run writes nothing and kills nothing, so it needs no exclusivity. Taking
+// the lock unconditionally meant the rehearsal could only ever run before the
+// first install, which is backwards: the point is to re-check what a session
+// would do whenever the blocklist changes, and by then the daemon is installed
+// and holding the lock forever.
+if !options.dryRun {
+    ensureSingleInstance()
+}
 
 if options.dryRun {
     let session = store.current() ?? Session(
