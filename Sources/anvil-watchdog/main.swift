@@ -8,22 +8,35 @@ signal(SIGINT, SIG_IGN)
 
 let paths = AnvilPaths()
 
-func processIsRunning(named name: String) -> Bool {
-    let output = Shell.output("/bin/ps", ["-axww", "-o", "command="]) ?? ""
-    return output.split(separator: "\n").contains { $0.contains(name) }
+/// Asks launchd about the job rather than grepping `ps`.
+///
+/// Two reasons. `ps -axww -o command=` walks every process on the machine and
+/// returns tens of kilobytes, once a second, forever — it made this process burn
+/// roughly two hundred times the CPU of the daemon it watches. And a substring
+/// match on "anvild" also matches "sudo .build/release/anvild --dry-run", so a
+/// leftover rehearsal process would convince the watchdog the daemon was alive
+/// when it was not, which defeats the point of having one.
+///
+/// Output is captured and discarded: `launchctl print` is verbose, and letting it
+/// inherit stdout would pour it into the daemon's log file every second.
+func jobIsLoaded(label: String) -> Bool {
+    Shell.output("/bin/launchctl", ["print", "system/\(label)"]) != nil
 }
 
-func bootstrap(label: String, plist: URL, contents: String) {
+func writePlistIfNeeded(_ plist: URL, contents: String) {
+    guard (try? String(contentsOf: plist, encoding: .utf8)) != contents else { return }
     do {
-        if (try? String(contentsOf: plist, encoding: .utf8)) != contents {
-            try contents.write(to: plist, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: plist.path)
-        }
-        _ = Shell.run("/bin/launchctl", ["bootstrap", "system", plist.path])
-        _ = Shell.run("/bin/launchctl", ["kickstart", "-k", "system/\(label)"])
+        try contents.write(to: plist, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: plist.path)
     } catch {
-        print("[anvil-watchdog] could not heal \(label): \(error)")
+        print("[anvil-watchdog] could not write \(plist.path): \(error)")
     }
+}
+
+func heal(label: String, plist: URL, contents: String) {
+    writePlistIfNeeded(plist, contents: contents)
+    _ = Shell.run("/bin/launchctl", ["bootstrap", "system", plist.path])
+    _ = Shell.run("/bin/launchctl", ["kickstart", "-k", "system/\(label)"])
 }
 
 let executableDirectory = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
@@ -32,21 +45,25 @@ let watchdogExecutable = executableDirectory.appendingPathComponent("anvil-watch
 
 while true {
     autoreleasepool {
-        if !processIsRunning(named: "anvild") {
-            bootstrap(
+        if !jobIsLoaded(label: "com.cjverma.anvild") {
+            heal(
                 label: "com.cjverma.anvild",
                 plist: paths.daemonPlist,
                 contents: LaunchDaemonPlists.daemon(executablePath: daemonExecutable)
             )
         }
 
-        if !processIsRunning(named: "anvil-watchdog") {
-            bootstrap(
-                label: "com.cjverma.anvil-watchdog",
-                plist: paths.watchdogPlist,
-                contents: LaunchDaemonPlists.watchdog(executablePath: watchdogExecutable)
-            )
-        }
+        // No process check for ourselves: this code is running, so the answer is
+        // always yes, and asking cost a second full process scan every second.
+        //
+        // The plist is a different matter. It can be deleted while we keep running,
+        // and without it the watchdog never comes back after a reboot. Comparing a
+        // small file costs nothing next to spawning a process.
+        writePlistIfNeeded(
+            paths.watchdogPlist,
+            contents: LaunchDaemonPlists.watchdog(executablePath: watchdogExecutable)
+        )
+
         sleep(1)
     }
 }
