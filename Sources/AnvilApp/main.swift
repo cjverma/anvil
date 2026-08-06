@@ -140,8 +140,24 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("There is no early exit. Safe Mode is the recovery path.")
+            Text(confirmationMessage)
         }
+    }
+
+    /// Spells out the actual consequences, because this is the last screen before
+    /// something that cannot be undone.
+    private var confirmationMessage: String {
+        let preset = model.selectedPreset
+        let apps = (preset?.appBundleIDs.count ?? 0) + (preset?.appPaths.count ?? 0)
+        let sites = preset?.domains.count ?? 0
+        return """
+        \(apps) app(s) and \(sites) website(s) blocked until \(endTimeString()).
+
+        Terminal, iTerm, Activity Monitor and System Settings close for the whole \
+        session. Your browsers restart now, so save anything open.
+
+        There is no early exit. Safe Mode is the recovery path.
+        """
     }
 
     private var header: some View {
@@ -160,15 +176,52 @@ struct ContentView: View {
     }
 
     private var editor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TextField("Bundle IDs, comma separated", text: $appBundleIDs, axis: .vertical)
-            TextField("App paths, comma separated", text: $appPaths, axis: .vertical)
-            TextField("Domains, comma separated", text: $domains, axis: .vertical)
+        VStack(alignment: .leading, spacing: 10) {
+            labelledField(
+                "Blocked apps",
+                caption: "Bundle IDs, comma separated",
+                text: $appBundleIDs,
+                prompt: "com.apple.Music, com.tinyspeck.slackmacgap"
+            )
+            labelledField(
+                "Blocked app paths",
+                caption: "Optional, comma separated",
+                text: $appPaths,
+                prompt: "/Applications/Slack.app"
+            )
+            labelledField(
+                "Blocked websites",
+                caption: "Comma separated",
+                text: $domains,
+                prompt: "reddit.com, youtube.com"
+            )
         }
-        .textFieldStyle(.roundedBorder)
         .onChange(of: appBundleIDs) { _ in commitFields() }
         .onChange(of: appPaths) { _ in commitFields() }
         .onChange(of: domains) { _ in commitFields() }
+    }
+
+    /// A visible heading per field, and a real minimum height.
+    ///
+    /// Three bare vertical-axis text fields collapsed to a few pixels with no
+    /// visible placeholder, so an empty preset looked identical to a filled one.
+    /// That is a bad thing to get wrong in front of a Start button you cannot undo.
+    private func labelledField(
+        _ title: String,
+        caption: String,
+        text: Binding<String>,
+        prompt: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(title).font(.callout.weight(.medium))
+                Text(caption).font(.caption).foregroundStyle(.secondary)
+            }
+            TextField(prompt, text: text, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .font(.callout)
+                .lineLimit(2...4)
+        }
     }
 
     private var duration: some View {
@@ -202,7 +255,14 @@ struct ContentView: View {
                 Label("Start", systemImage: "lock.fill")
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(model.selectedPreset == nil)
+            // An empty preset still kills the escape tools, so starting one costs
+            // you Terminal for the duration and blocks nothing in return.
+            .disabled(model.selectedPreset?.blocksNothing ?? true)
+            .help(
+                (model.selectedPreset?.blocksNothing ?? true)
+                    ? "Add at least one app or website first."
+                    : "Starts the block. There is no way to cancel it."
+            )
         }
     }
 

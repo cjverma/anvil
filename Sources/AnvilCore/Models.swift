@@ -64,6 +64,7 @@ public struct PublicState: Codable, Equatable {
 public enum RequestValidationError: Error, Equatable, LocalizedError {
     case invalidDuration
     case doesNotExtend
+    case nothingToBlock
 
     public var errorDescription: String? {
         switch self {
@@ -71,7 +72,24 @@ public enum RequestValidationError: Error, Equatable, LocalizedError {
             return "Duration must be between 1 and 1440 minutes."
         case .doesNotExtend:
             return "Anvil only accepts requests that extend the current deadline."
+        case .nothingToBlock:
+            return "Add at least one app or website before starting a session."
         }
+    }
+}
+
+public extension Preset {
+    /// Nothing listed to block.
+    ///
+    /// Worth refusing rather than shrugging at: the escape tools are killed on
+    /// every session regardless of preset, so starting an empty one closes your
+    /// Terminal, Activity Monitor and System Settings for the full duration and
+    /// blocks nothing at all in exchange. And there is no cancel.
+    var blocksNothing: Bool {
+        let normalized = self.normalized()
+        return normalized.appBundleIDs.isEmpty
+            && normalized.appPaths.isEmpty
+            && normalized.domains.isEmpty
     }
 }
 
@@ -97,6 +115,13 @@ public enum SessionPolicy {
                 endsAt: candidateEnd,
                 preset: current.preset.union(request.preset)
             )
+        }
+
+        // Only a session starting from nothing needs something to block. An empty
+        // preset against a live session is the natural way to say "same blocklist,
+        // later deadline", and the union above already handles it.
+        guard !request.preset.blocksNothing else {
+            throw RequestValidationError.nothingToBlock
         }
 
         return Session(startedAt: now, endsAt: candidateEnd, preset: request.preset.normalized())
