@@ -107,6 +107,7 @@ final class AppModel: ObservableObject {
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
+        alert.window.level = .modalPanel
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
@@ -177,15 +178,29 @@ struct ContentView: View {
     /// it always runs.
     private func confirmAndStart() {
         let endsAt = Date().addingTimeInterval(TimeInterval(model.minutes * 60))
-        let alert = NSAlert()
-        alert.messageText = "Start Anvil?"
-        alert.informativeText = confirmationMessage(endsAt: endsAt)
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Block until \(formatted(endsAt))")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        model.startSelected()
+        let message = confirmationMessage(endsAt: endsAt)
+        let confirmTitle = "Block until \(formatted(endsAt))"
+
+        // Dismiss the panel first, and present on the next runloop turn.
+        //
+        // An alert raised while the menu bar panel is still key opens behind it:
+        // you end up with the panel in front and the thing you have to answer
+        // hidden at the back. Closing the panel and deferring by one turn lets the
+        // alert become the frontmost window it needs to be.
+        NSApp.keyWindow?.close()
+
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "Start Anvil?"
+            alert.informativeText = message
+            alert.alertStyle = .critical
+            alert.addButton(withTitle: confirmTitle)
+            alert.addButton(withTitle: "Cancel")
+            alert.window.level = .modalPanel
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            model.startSelected()
+        }
     }
 
     /// Spells out the actual consequences, because this is the last screen before
@@ -200,7 +215,7 @@ struct ContentView: View {
         Terminal, iTerm, Activity Monitor and System Settings close for the whole \
         session. Your browsers restart now, so save anything open.
 
-        There is no early exit. Safe Mode is the recovery path.
+        There is no early exit.
         """
     }
 
