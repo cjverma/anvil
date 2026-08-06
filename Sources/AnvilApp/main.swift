@@ -73,10 +73,42 @@ final class AppModel: ObservableObject {
         guard let preset = selectedPreset else { return }
         let request = StartRequest(preset: preset, minutes: minutes)
         do {
-            status = try ControlSocketClient().send(request)
+            let response = try ControlSocketClient().send(request)
+            status = response
+            // The panel dismisses the moment a dialog button is tapped, so the
+            // status line is gone before anyone can read it. A failed start looked
+            // exactly like a successful one: the window just closed. Anything other
+            // than a clean start has to be reported in something that outlives the
+            // panel.
+            if !response.hasPrefix("ok") {
+                presentAlert(
+                    title: "Anvil did not start the block",
+                    message: response.isEmpty ? "The daemon accepted the connection but sent no reply." : response
+                )
+            }
         } catch {
-            status = "Install or start the daemon first."
+            status = "Could not reach the daemon."
+            presentAlert(
+                title: "Anvil could not reach the daemon",
+                message: """
+                \(error.localizedDescription)
+
+                Nothing was blocked. Check that the daemon is running:
+
+                    sudo launchctl print system/com.cjverma.anvild
+                    ls -l /var/run/anvil.sock
+                """
+            )
         }
+    }
+
+    private func presentAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     func addPreset() {
@@ -100,6 +132,13 @@ struct ContentView: View {
     @State private var appPaths = ""
     @State private var domains = ""
     @State private var showingConfirm = false
+    /// Captured once, when Start is pressed.
+    ///
+    /// Both the dialog body and its button used to call a helper that recomputed
+    /// Date() + minutes on each SwiftUI evaluation, so they were rendered at
+    /// different moments and disagreed by an hour on screen. A confirmation for
+    /// something with no undo has to state one time and mean it.
+    @State private var pendingEndsAt = Date()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -135,7 +174,7 @@ struct ContentView: View {
         .padding(16)
         .onAppear(perform: syncFields)
         .confirmationDialog("Start Anvil?", isPresented: $showingConfirm, titleVisibility: .visible) {
-            Button("Block until \(endTimeString())", role: .destructive) {
+            Button("Block until \(formatted(pendingEndsAt))", role: .destructive) {
                 model.startSelected()
             }
             Button("Cancel", role: .cancel) {}
@@ -151,7 +190,7 @@ struct ContentView: View {
         let apps = (preset?.appBundleIDs.count ?? 0) + (preset?.appPaths.count ?? 0)
         let sites = preset?.domains.count ?? 0
         return """
-        \(apps) app(s) and \(sites) website(s) blocked until \(endTimeString()).
+        \(apps) app(s) and \(sites) website(s) blocked until \(formatted(pendingEndsAt)).
 
         Terminal, iTerm, Activity Monitor and System Settings close for the whole \
         session. Your browsers restart now, so save anything open.
@@ -250,6 +289,7 @@ struct ContentView: View {
             }
             Spacer()
             Button {
+                pendingEndsAt = Date().addingTimeInterval(TimeInterval(model.minutes * 60))
                 showingConfirm = true
             } label: {
                 Label("Start", systemImage: "lock.fill")
@@ -287,7 +327,7 @@ struct ContentView: View {
         text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
     }
 
-    private func endTimeString() -> String {
-        Date().addingTimeInterval(TimeInterval(model.minutes * 60)).formatted(date: .abbreviated, time: .shortened)
+    private func formatted(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .shortened)
     }
 }
