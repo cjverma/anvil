@@ -131,14 +131,6 @@ struct ContentView: View {
     @State private var appBundleIDs = ""
     @State private var appPaths = ""
     @State private var domains = ""
-    @State private var showingConfirm = false
-    /// Captured once, when Start is pressed.
-    ///
-    /// Both the dialog body and its button used to call a helper that recomputed
-    /// Date() + minutes on each SwiftUI evaluation, so they were rendered at
-    /// different moments and disagreed by an hour on screen. A confirmation for
-    /// something with no undo has to state one time and mean it.
-    @State private var pendingEndsAt = Date()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -173,24 +165,37 @@ struct ContentView: View {
         }
         .padding(16)
         .onAppear(perform: syncFields)
-        .confirmationDialog("Start Anvil?", isPresented: $showingConfirm, titleVisibility: .visible) {
-            Button("Block until \(formatted(pendingEndsAt))", role: .destructive) {
-                model.startSelected()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(confirmationMessage)
-        }
+    }
+
+    /// Confirms with a modal NSAlert rather than SwiftUI's confirmationDialog.
+    ///
+    /// A confirmationDialog presented from inside a MenuBarExtra window panel can be
+    /// torn down when the panel resigns key and dismisses, taking its action closure
+    /// with it. That produced the one failure mode you cannot debug: the window
+    /// closed, no request was sent, nothing reached the daemon, and no error
+    /// appeared anywhere. runModal() blocks and returns a choice, so the line after
+    /// it always runs.
+    private func confirmAndStart() {
+        let endsAt = Date().addingTimeInterval(TimeInterval(model.minutes * 60))
+        let alert = NSAlert()
+        alert.messageText = "Start Anvil?"
+        alert.informativeText = confirmationMessage(endsAt: endsAt)
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Block until \(formatted(endsAt))")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        model.startSelected()
     }
 
     /// Spells out the actual consequences, because this is the last screen before
     /// something that cannot be undone.
-    private var confirmationMessage: String {
+    private func confirmationMessage(endsAt: Date) -> String {
         let preset = model.selectedPreset
         let apps = (preset?.appBundleIDs.count ?? 0) + (preset?.appPaths.count ?? 0)
         let sites = preset?.domains.count ?? 0
         return """
-        \(apps) app(s) and \(sites) website(s) blocked until \(formatted(pendingEndsAt)).
+        \(apps) app(s) and \(sites) website(s) blocked until \(formatted(endsAt)).
 
         Terminal, iTerm, Activity Monitor and System Settings close for the whole \
         session. Your browsers restart now, so save anything open.
@@ -289,8 +294,7 @@ struct ContentView: View {
             }
             Spacer()
             Button {
-                pendingEndsAt = Date().addingTimeInterval(TimeInterval(model.minutes * 60))
-                showingConfirm = true
+                confirmAndStart()
             } label: {
                 Label("Start", systemImage: "lock.fill")
             }
